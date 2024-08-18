@@ -181,27 +181,30 @@ impl PgTempDB {
             self.dump_database(path);
         }
 
-        let mut postgres_process = self.postgres_process.take().unwrap();
+        let postgres_process = self.postgres_process.take().unwrap();
         let temp_dir = self.temp_dir.take().unwrap();
 
-        if self.persist {
+        #[allow(clippy::cast_possible_wrap)]
+        let group_id = unsafe { libc::getpgid(postgres_process.id() as i32) };
+        let kill_signal = if self.persist {
             // graceful shutdown if we're trying to persist.
-            #[allow(clippy::cast_possible_wrap)]
-            let _ret = unsafe { libc::kill(postgres_process.id() as i32, libc::SIGTERM) };
-            let _output = postgres_process
-                .wait_with_output()
-                .expect("postgres server failed to exit cleanly");
-            // this prevents it from being deleted on drop
-            let _path = temp_dir.into_path();
+            libc::SIGTERM
         } else {
             // If there are clients connected the server will not shut down until they are
             // disconnected, so we should just send sigkill and end it immediately.
-            postgres_process
-                .kill()
-                .expect("postgres server could not be killed");
-            let _output = postgres_process
-                .wait_with_output()
-                .expect("postgres server failed to exit cleanly");
+            libc::SIGKILL
+        };
+
+        #[allow(clippy::cast_possible_wrap)]
+        let _ret = unsafe { libc::killpg(group_id, kill_signal) };
+        let _output = postgres_process
+            .wait_with_output()
+            .expect("postgres server failed to exit cleanly");
+
+        if self.persist {
+            // this prevents it from being deleted on drop
+            let _path = temp_dir.into_path();
+        } else {
             temp_dir.close().expect("failed to clean up temp directory");
         }
     }
